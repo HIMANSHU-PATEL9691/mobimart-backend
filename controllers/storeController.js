@@ -1,6 +1,5 @@
 const storeService = require("../services/storeService");
 const multer = require("multer");
-const path = require("path");
 const xlsx = require("xlsx");
 
 const sendSuccess = (res, data, status = 200) => res.status(status).json(data);
@@ -30,7 +29,7 @@ const normalizeString = (value) => (typeof value === "string" ? value.trim() : "
 
 exports.uploadExcel = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024, fieldSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (
       file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
@@ -44,21 +43,14 @@ exports.uploadExcel = multer({
   },
 });
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "../uploads"));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  },
-});
+// Configure multer for file uploads and keep files in memory for MongoDB storage
+const storage = multer.memoryStorage();
 
 exports.upload = multer({ 
   storage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit
+    fieldSize: 10 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("image/")) {
@@ -166,14 +158,14 @@ exports.createProduct = async (req, res, next) => {
     const imageUrls = [];
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => {
-        imageUrls.push(`/uploads/${file.filename}`);
+        const base64 = file.buffer.toString("base64");
+        imageUrls.push(`data:${file.mimetype};base64,${base64}`);
       });
     }
 
     const payload = {
       ...req.body,
-      // Always keep only first 3 images (prevents 4th image from being stored)
-      images: [...imageUrls, ...parseArrayField(req.body.images)].slice(0, 3),
+      images: [...imageUrls, ...parseArrayField(req.body.imageUrls || req.body.images)].slice(0, 3),
       specs: parseJsonField(req.body.specs) || {},
     };
 
@@ -190,7 +182,8 @@ exports.updateProduct = async (req, res, next) => {
     const imageUrls = [];
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => {
-        imageUrls.push(`/uploads/${file.filename}`);
+        const base64 = file.buffer.toString("base64");
+        imageUrls.push(`data:${file.mimetype};base64,${base64}`);
       });
     }
 
@@ -202,9 +195,9 @@ exports.updateProduct = async (req, res, next) => {
     if (imageUrls.length > 0) {
       // If new images are uploaded, replace existing ones
       payload.images = imageUrls.slice(0, 3);
-    } else if (payload.images) {
-      // If images came from body (e.g. existing ones), ensure max 3
-      payload.images = parseArrayField(payload.images).slice(0, 3);
+    } else if (payload.imageUrls || payload.images) {
+      const existing = parseArrayField(payload.imageUrls || payload.images);
+      payload.images = existing.slice(0, 3);
     }
 
     const updated = await storeService.updateProduct(req.params.id, payload);
